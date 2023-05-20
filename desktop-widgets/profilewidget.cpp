@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 
 #include "profilewidget.h"
-#include "profile-widget/profilewidget2.h"
+#include "profile-widget/profileview.h"
 #include "commands/command.h"
 #include "core/color.h"
 #include "core/selection.h"
@@ -12,6 +12,8 @@
 
 #include <QToolBar>
 #include <QHBoxLayout>
+#include <QQmlEngine>
+#include <QQuickWidget>
 #include <QStackedWidget>
 #include <QLabel>
 
@@ -52,6 +54,7 @@ void EmptyView::resizeEvent(QResizeEvent *)
 	update();
 }
 
+static const QUrl urlProfileView = QUrl(QStringLiteral("qrc:/qml/profileview.qml"));
 ProfileWidget::ProfileWidget() : d(nullptr), dc(0), originalDive(nullptr), placingCommand(false)
 {
 	ui.setupUi(this);
@@ -71,7 +74,10 @@ ProfileWidget::ProfileWidget() : d(nullptr), dc(0), originalDive(nullptr), placi
 
 	emptyView.reset(new EmptyView);
 
-	view.reset(new ProfileWidget2(DivePlannerPointsModel::instance(), 1.0, this));
+	viewWidget.reset(new QQuickWidget);
+	viewWidget->setSource(urlProfileView);
+	viewWidget->setResizeMode(QQuickWidget::SizeRootObjectToView);
+
 	QToolBar *toolBar = new QToolBar(this);
 	for (QAction *a: toolbarActions)
 		toolBar->addAction(a);
@@ -80,7 +86,7 @@ ProfileWidget::ProfileWidget() : d(nullptr), dc(0), originalDive(nullptr), placi
 
 	stack = new QStackedWidget(this);
 	stack->addWidget(emptyView.get());
-	stack->addWidget(view.get());
+	stack->addWidget(viewWidget.get());
 
 	QHBoxLayout *layout = new QHBoxLayout(this);
 	layout->setSpacing(0);
@@ -119,10 +125,6 @@ ProfileWidget::ProfileWidget() : d(nullptr), dc(0), originalDive(nullptr), placi
 	connect(ui.profPO2, &QAction::triggered, pp_gas, &qPrefPartialPressureGas::set_po2);
 
 	connect(&diveListNotifier, &DiveListNotifier::divesChanged, this, &ProfileWidget::divesChanged);
-	connect(&diveListNotifier, &DiveListNotifier::settingsChanged, view.get(), &ProfileWidget2::settingsChanged);
-	connect(view.get(), &ProfileWidget2::stopAdded, this, &ProfileWidget::stopAdded);
-	connect(view.get(), &ProfileWidget2::stopRemoved, this, &ProfileWidget::stopRemoved);
-	connect(view.get(), &ProfileWidget2::stopMoved, this, &ProfileWidget::stopMoved);
 
 	ui.profCalcAllTissues->setChecked(qPrefTechnicalDetails::calcalltissues());
 	ui.profCalcCeiling->setChecked(qPrefTechnicalDetails::calcceiling());
@@ -142,10 +144,32 @@ ProfileWidget::ProfileWidget() : d(nullptr), dc(0), originalDive(nullptr), placi
 	ui.profTankbar->setChecked(qPrefTechnicalDetails::tankbar());
 	ui.profTissues->setChecked(qPrefTechnicalDetails::percentagegraph());
 	ui.profScaled->setChecked(qPrefTechnicalDetails::zoomed_plot());
+
+	//connect(&diveListNotifier, &DiveListNotifier::settingsChanged, view.get(), &ProfileWidget2::settingsChanged);
+	//connect(view.get(), &ProfileWidget2::stopAdded, this, &ProfileWidget::stopAdded);
+	//connect(view.get(), &ProfileWidget2::stopRemoved, this, &ProfileWidget::stopRemoved);
+	//connect(view.get(), &ProfileWidget2::stopMoved, this, &ProfileWidget::stopMoved);
 }
 
 ProfileWidget::~ProfileWidget()
 {
+}
+
+// hack around the Qt6 bug where the QML object gets destroyed and recreated
+ProfileView *ProfileWidget::getView()
+{
+	ProfileView *view = qobject_cast<ProfileView *>(viewWidget->rootObject());
+	if (!view)
+		qWarning("Oops. The root of the StatsView is not a StatsView.");
+	if (view) {
+		// try to prevent the JS garbage collection from freeing the object
+		// this appears to fail with Qt6 which is why we still look up the
+		// object from the rootObject
+		viewWidget->engine()->setObjectOwnership(view, QQmlEngine::CppOwnership);
+		view->setParent(this);
+		view->setVisible(isVisible()); // Synchronize visibility of widget and QtQuick-view.
+	}
+	return view;
 }
 
 void ProfileWidget::setEnabledToolbar(bool enabled)
@@ -210,13 +234,14 @@ void ProfileWidget::plotDive(dive *dIn, int dcIn)
 			editDive();
 	}
 
+	auto view = getView();
 	setEnabledToolbar(d != nullptr);
 	if (editedDive) {
 		view->plotDive(editedDive.get(), editedDc);
 		setDive(editedDive.get());
 	} else if (d) {
-		view->setProfileState(d, dc);
-		view->resetZoom(); // when switching dive, reset the zoomLevel
+		//view->setProfileState(d, dc);
+		//view->resetZoom(); // when switching dive, reset the zoomLevel
 		view->plotDive(d, dc);
 		setDive(d);
 	} else {
@@ -259,8 +284,8 @@ void ProfileWidget::divesChanged(const QVector<dive *> &dives, DiveField field)
 	if (!d || !dives.contains(d) || !(field.duration || field.depth) || placingCommand)
 		return;
 
-	// If were editing the current dive and not currently
-	// placing command, we have to update the edited dive.
+	// If we're editing the current dive and not currently
+	// placing a command, we have to update the edited dive.
 	if (editedDive) {
 		copy_dive(d, editedDive.get());
 		// TODO: Holy moly that function sends too many signals. Fix it!
@@ -273,7 +298,7 @@ void ProfileWidget::divesChanged(const QVector<dive *> &dives, DiveField field)
 void ProfileWidget::setPlanState(const struct dive *d, int dc)
 {
 	exitEditMode();
-	view->setPlanState(d, dc);
+	//view->setPlanState(d, dc);
 	setDive(d);
 }
 
@@ -297,7 +322,7 @@ void ProfileWidget::editDive()
 	originalDive = d;
 	DivePlannerPointsModel::instance()->setPlanMode(DivePlannerPointsModel::ADD);
 	DivePlannerPointsModel::instance()->loadFromDive(editedDive.get(), editedDc);
-	view->setEditState(editedDive.get(), editedDc);
+	//view->setEditState(editedDive.get(), editedDc);
 }
 
 void ProfileWidget::exitEditMode()
@@ -305,7 +330,7 @@ void ProfileWidget::exitEditMode()
 	if (!editedDive)
 		return;
 	DivePlannerPointsModel::instance()->setPlanMode(DivePlannerPointsModel::NOTHING);
-	view->setProfileState(d, dc); // switch back to original dive before erasing the copy.
+	//view->setProfileState(d, dc); // switch back to original dive before erasing the copy.
 	editedDive.reset();
 	originalDive = nullptr;
 }
